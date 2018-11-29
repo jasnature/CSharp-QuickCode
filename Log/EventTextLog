@@ -1,0 +1,374 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+
+namespace QuickCode
+{
+    /// <summary>
+    /// Receiver XmlType partial
+    /// </summary>
+    public enum XmlType_CIP
+    {
+        Heartbeat,
+        Error,
+        Event
+    }
+
+    [Flags]
+    public enum BusinessName : byte
+    {
+        Football = 0,
+        Racing = 1,
+        Lottery = 2,
+        Others = 4,
+    }
+
+    /// <summary>
+    /// output type
+    /// </summary>
+    public enum OutputType
+    {
+        WriteEvent,
+        WriteFile
+    }
+
+
+    /// <summary>
+    /// Windows Event log and save record to file for class
+    /// </summary>
+    public class CSomeQueueLogger
+    {
+
+        #region Share Static
+        /// <summary>
+        /// how manager event path save to system event. true: save to application,false: save to custom define path with ApplicationLogNames
+        /// </summary>
+        protected static bool saveEventToDefaultApplicationPath = false;
+
+        protected static object lockObj = new object();
+
+        protected static ConcurrentDictionary<BusinessName, CSomeQueueLogger> instanceCache = new ConcurrentDictionary<BusinessName, CSomeQueueLogger>(3, 3);
+
+        protected static ConcurrentQueue<EventBean> logQueueCache = null;
+
+        protected static Timer fixdNotifyWriteCache = null;
+
+        protected static string fileSavePath = null;
+
+        #endregion
+
+        #region protected
+
+        protected string ApplicationLogName = "CustomDefineApplication";
+        protected string SourceGroupName = string.Empty;
+        protected string FullSourceName = null;
+        protected long eventMaxMB = 1024 * 1024 * 3;
+        protected int timerTimeMS = 1000 * 6;
+        protected EventLog eventLog = null;
+
+        #endregion
+
+        private CSomeQueueLogger() { }
+
+        public static CSomeQueueLogger GetInstance(BusinessName instanceName)
+        {
+            CSomeQueueLogger instance = null;
+            try
+            {
+                if (!instanceCache.TryGetValue(instanceName, out instance))
+                {
+                    lock (lockObj)
+                    {
+                        switch (instanceName)
+                        {
+                            case BusinessName.Football:
+                                instance = new CSomeQueueLogger("FB");
+                                break;
+                            case BusinessName.Racing:
+                                instance = new CSomeQueueLogger("RS");
+                                break;
+                            case BusinessName.Lottery:
+                                instance = new CSomeQueueLogger("LT");
+                                break;
+                            default:
+                                instance = new CSomeQueueLogger("OTH");
+                                break;
+                        }
+                    }
+                    instanceCache.TryAdd(instanceName, instance);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogUtil.Log.Error("GetInstance CEventQueueLogger Log ERROR: instanceName=" + instanceName, ex);
+            }
+            return instance;
+        }
+
+
+        private CSomeQueueLogger(string sourceGroupName)
+        {
+            try
+            {
+                this.SourceGroupName = sourceGroupName;
+
+                this.FullSourceName = ApplicationLogName + "_" + sourceGroupName;
+
+                if (saveEventToDefaultApplicationPath)
+                {
+                    eventLog = new EventLog();
+                    this.FullSourceName = "App_" + ApplicationLogName + "_" + sourceGroupName;
+                }
+                else
+                {
+                    if (!EventLog.SourceExists(FullSourceName))
+                    {
+                        EventLog.CreateEventSource(FullSourceName, ApplicationLogName);
+                    }
+                    eventLog = new EventLog(ApplicationLogName, ".");
+                    eventLog.MaximumKilobytes = eventMaxMB;
+                }
+
+
+                lock (lockObj)
+                {
+                    if (CSomeQueueLogger.fixdNotifyWriteCache == null)
+                        CSomeQueueLogger.fixdNotifyWriteCache = new Timer(CSomeQueueLogger_TimerCallback, null, TimeSpan.FromMilliseconds(timerTimeMS + 1500), TimeSpan.FromMilliseconds(timerTimeMS));
+
+                    if (CSomeQueueLogger.logQueueCache == null)
+                        CSomeQueueLogger.logQueueCache = new ConcurrentQueue<EventBean>();
+
+                    if (CSomeQueueLogger.fileSavePath == null)
+                    {
+                        string parentPath = //please input code set custom save path
+
+                        CSomeQueueLogger.fileSavePath = Path.Combine(parentPath, "XmlTypeLog");
+
+                        if (!Directory.Exists(CSomeQueueLogger.fileSavePath))
+                        {
+                            Directory.CreateDirectory(CSomeQueueLogger.fileSavePath);//Fotify:handled
+                        }
+                    }
+                }
+
+            }
+            catch (Exception ex)
+            {
+                LogUtil.Log.Error("Init CEventQueueLogger Log ERROR: FullSourceName=" + FullSourceName, ex);
+            }
+        }
+
+        private bool isProcessLog = false;
+
+        /// <summary>
+        /// if count>50 then notify once,or fixd time notify in timer thread
+        /// </summary>
+        /// <param name="state"></param>
+        private void CSomeQueueLogger_TimerCallback(object state)
+        {
+#if DEBUG
+            Console.WriteLine("CEventQueueLogger_TimerCallback");
+#endif
+            //Prevent repeat enter logic
+            if (isProcessLog) return;
+            isProcessLog = true;
+            try
+            {
+                EventBean bean;
+                while (CSomeQueueLogger.logQueueCache.TryDequeue(out bean))
+                {
+
+                    switch (bean.OutputType)
+                    {
+                        case OutputType.WriteEvent:
+                            eventLog.Source = bean.SourceName;
+                            eventLog.WriteEntry(bean.Content, bean.EventLogEntryType);
+                            break;
+                        case OutputType.WriteFile:
+
+                            //only write last error/event/Heartbeat while a span time.
+                            if (CSomeQueueLogger.logQueueCache.Count + 1 >= 2)
+                            {
+                                int ctemp = CSomeQueueLogger.logQueueCache.Where(p => p.SourceName.Equals(bean.SourceName)).Count();
+                                if (ctemp >= 1)
+                                {
+                                    continue;
+                                }
+                            }
+
+                            string fullPathName = Path.Combine(CSomeQueueLogger.fileSavePath, bean.SourceName + "_Last.xml");
+                            byte[] contentBytes = Encoding.Default.GetBytes(bean.Content);
+                            using (FileStream fs = new FileStream(fullPathName, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))//Fotify:handled
+                            {
+                                fs.Write(contentBytes, 0, contentBytes.Length);
+                                fs.Flush();
+                            }
+
+                            break;
+                        default:
+                            break;
+                    }
+
+                    Thread.Sleep(10);
+
+                }
+                isProcessLog = false;
+            }
+            catch (Exception ex)
+            {
+                LogUtil.Log.Error("CEventQueueLogger_TimerCallback Write ERROR.", ex);
+                isProcessLog = false;
+            }
+        }
+
+        public static void ExitToFinished()
+        {
+            try
+            {
+                if (fixdNotifyWriteCache.Change(0, 1))
+                {
+                    while (CSomeQueueLogger.logQueueCache.Count > 0)
+                    {
+                        Thread.Sleep(100);
+                    }
+                }
+                fixdNotifyWriteCache.Change(TimeSpan.FromMilliseconds(1000 * 4 * 2), TimeSpan.FromMilliseconds(1000 * 4));
+            }
+            catch (Exception ex)
+            {
+                LogUtil.Log.Error("ExitToFinished ERROR.", ex);
+            }
+        }
+
+        private void WriteEventLog(EventLogEntryType errorType, string format, params string[] args)
+        {
+            try
+            {
+                CSomeQueueLogger.logQueueCache.Enqueue(new EventBean()
+                {
+                    EventLogEntryType = errorType,
+                    Content = string.Format(format, args),
+                    SourceName = FullSourceName,
+                    OutputType = OutputType.WriteEvent
+                });
+            }
+            catch (Exception ex)
+            {
+                LogUtil.Log.Error("WriteEventLog Queue Log ERROR.", ex);
+            }
+        }
+
+        private void WriteFileLog(XmlType_CIP xmlType, string format, params string[] args)
+        {
+            try
+            {
+                CSomeQueueLogger.logQueueCache.Enqueue(new EventBean()
+                {
+                    Content = string.Format(format, args),
+                    SourceName = xmlType.ToString() + "_" + SourceGroupName,
+                    OutputType = OutputType.WriteFile
+                });
+            }
+            catch (Exception ex)
+            {
+                LogUtil.Log.Error("WriteEventLog Queue Log ERROR.", ex);
+            }
+        }
+
+        public void WriteEventInfo(string format, params string[] args)
+        {
+            WriteEventLog(EventLogEntryType.Information, format, args);
+        }
+
+        public void WriteEventWarning(string format, params string[] args)
+        {
+            WriteEventLog(EventLogEntryType.Warning, format, args);
+        }
+
+        public void WriteEventError(string format, params string[] args)
+        {
+            WriteEventLog(EventLogEntryType.Error, format, args);
+        }
+
+        /// <summary>
+        /// Write event log and file log with both base on XmlType choose
+        /// </summary>
+        /// <param name="xmlType"></param>
+        /// <param name="format"></param>
+        /// <param name="args"></param>
+        public void WriteLogByXmlType(string xmlType, string format, params string[] args)
+        {
+            XmlType_CIP xmlType_CIP;
+            if (!Enum.TryParse<XmlType_CIP>(xmlType, true, out xmlType_CIP)) return;
+
+            switch (xmlType_CIP)
+            {
+                case XmlType_CIP.Error:
+                    WriteEventError(XmlType_CIP.Error.ToString() + ":  " + format, args);
+                    //if comment then cisubscriber.dll have too much error,It is too often by every time both write and clear
+                    WriteFileLog(XmlType_CIP.Error, format, args);
+                    break;
+                case XmlType_CIP.Heartbeat:
+                    WriteFileLog(XmlType_CIP.Heartbeat, format, args);
+                    break;
+                case XmlType_CIP.Event:
+                    WriteEventInfo(XmlType_CIP.Event.ToString() + ":  " + format, args);
+                    WriteFileLog(XmlType_CIP.Event, format, args);
+                    break;
+            }
+        }
+
+
+        protected struct EventBean
+        {
+
+            private OutputType outputType;
+
+            public OutputType OutputType
+            {
+                get { return outputType; }
+                set { outputType = value; }
+            }
+
+            private string content;
+
+            public string Content
+            {
+                get { return content; }
+                set { content = value; }
+            }
+
+            private string sourceName;
+
+            public string SourceName
+            {
+                get { return sourceName; }
+                set { sourceName = value; }
+            }
+
+
+            #region Event Relate
+
+            private EventLogEntryType eventLogEntryType;
+
+            public EventLogEntryType EventLogEntryType
+            {
+                get { return eventLogEntryType; }
+                set { eventLogEntryType = value; }
+            }
+
+
+            #endregion
+
+
+
+        }
+
+
+    }
+}
