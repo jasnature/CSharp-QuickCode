@@ -1,0 +1,566 @@
+class Program
+    {
+        /// <summary>
+        /// mapping new function entry.
+        /// </summary>
+        private static void InitFcuntionMappingAction()
+        {
+            //if need add new function, only add below of mapping to method entry.
+            StaticData.RegActionList.Add(StaticData.Menu_CreateFolder, GenerateFolderAction.GenerateInputRange);
+            StaticData.RegActionList.Add(StaticData.Menu_ScanFileNotify, ScanFileNotifyAction.ScanFileWithNotify);
+
+        }
+
+        static void Main(string[] args)
+        {
+            AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+            CommonMethod.PrintGreenInfo("======Notify: Input " + StaticData.Param_Help + " get help info======");
+            Console.WriteLine(); Console.WriteLine();
+            //args = new string[] { "-h" };
+            //args = new string[] { "-m","cf", "-date", "2018/7","-op",@"C:\CCCCCC_TestFolder\logtool" };
+            //args = new string[] { "-m", "cf", "-date", "2018/7", "-op", @"C:\CCCCCC_TestFolder\logtool","-ln","_Y~_Z" };
+            //args = new string[] { "-m", "cf", "-def", "-op", @"C:\CCCCCC_TestFolder\logtool" };
+            //args = new string[] { "-m", "cf", "-def", "-op", @"C:\CCCCCC_TestFolder\logtool", "-ln", "_Z" };
+            //args = new string[] { "-m", "cf", "-date", "2018/1", "-ad", "2", "-op", @"C:\CCCCCC_TestFolder\logtool", "-ln", "_Z" };
+            //args = new string[] { "-m", "scan", "-time", "00:30:00", "-ip", @"C:\CCCCCC_TestFolder\scanfiles", "-ft", "*.txt" };
+
+            InitFcuntionMappingAction();
+            InitArgs(args);
+            if (StaticData.CmdParamList.Count > 0)
+            {
+                if (StaticData.CmdParamList.ContainsKey(StaticData.Param_Menu))
+                {
+                    string cmdName = StaticData.CmdParamList[StaticData.Param_Menu];
+
+                    if (!string.IsNullOrEmpty(cmdName))
+                    {
+                        if (StaticData.RegActionList.ContainsKey(cmdName))
+                        {
+                            Task taskTemp = Task.Factory.StartNew(() =>
+                            {
+                                StaticData.RegActionList[cmdName]();
+                            });
+
+                            Task.WaitAll(taskTemp);
+
+                            CommonMethod.PrintGreenInfo("Step End: The [" + StaticData.Param_Menu + " " + cmdName + "] CommandLine Execute Done!");
+                        }
+                    }
+                    else
+                    {
+                        CommonMethod.PrintRedInfo("Error: Please input " + StaticData.Param_Menu + " cmd child function name.");
+                    }
+                }
+                else if (StaticData.CmdParamList.ContainsKey(StaticData.Param_Help))
+                {
+                    HelpAction.HelpInfo();
+                }
+                else
+                {
+                    CommonMethod.PrintRedInfo("Error: Input CommandLine incorrect, Please confirm params.");
+                }
+
+            }
+            else
+            {
+                CommonMethod.PrintRedInfo("Error: Have not find any commandLine input!Please use system cmd.");
+            }
+
+        }
+
+        static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+
+            string info = "UnhandledException throw info: [" + e.ExceptionObject.ToString() + "]";
+            CommonMethod.PushToEventLog(info, EventLogEntryType.Error);
+            CommonMethod.PrintRedInfo(info);
+
+            Environment.Exit(1);
+        }
+
+        private static void InitArgs(string[] args)
+        {
+
+            if (args != null && args.Length > 0)
+            {
+
+                for (int i = 0; i < args.Length; i++)
+                {
+#if DEBUG
+                    Console.Write(args[i] + " ");
+#endif
+                    if (args[i].IndexOf("-") == 0)
+                    {
+                        StaticData.CmdParamList.Add(args[i].ToLower(), null);
+                        if ((i + 1) < args.Length && args[i + 1].IndexOf("-") != 0)
+                        {
+                            StaticData.CmdParamList[args[i].ToLower()] = args[i + 1];
+                        }
+                    }
+                }
+                Console.WriteLine();
+            }
+        }
+
+
+
+
+
+    }
+    
+    
+    
+    public class HelpAction
+    {
+        public static void HelpInfo()
+        {
+            Console.WriteLine("#####    Print Help Info Start    ######");
+            Console.WriteLine();
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("======  Function/Menu model cmd set desc  ============");
+            Console.WriteLine(StaticData.Param_Menu + " [Cmd Option list...]Select a function to execute, Have as below:");
+            Console.WriteLine();
+            Console.WriteLine(StaticData.Param_Menu + " " + StaticData.Menu_CreateFolder + ": create per day folder by datetime,date used [" + StaticData.Param_Date +
+                "] to specify value or [" + StaticData.Param_Default + "] default. (Default value: create folder name in whole year, suffix name include(_A _B _C))");
+            Console.WriteLine();
+            Console.WriteLine(StaticData.Param_Menu + " " + StaticData.Menu_ScanFileNotify + ": scan some file in specify folder by delay before time with notify user.");
+            Console.WriteLine("=========================================================");
+            Console.ForegroundColor = ConsoleColor.DarkGreen;
+            Console.WriteLine();
+            Console.WriteLine();
+            Console.WriteLine("======  Other relate params desc  =========");
+            Console.WriteLine(StaticData.Param_Output + " : Specify one output directory or full path filename.");
+            Console.WriteLine();
+            Console.WriteLine(StaticData.Param_Input + " : Specify one input directory or full path filename.");
+            Console.WriteLine();
+            Console.WriteLine(StaticData.Param_FileExt + " : Specify file type match formate.e.g(*.log or *.* or *.rec or etc....)");
+            Console.WriteLine();
+            Console.WriteLine(StaticData.Param_LastName + " : Specify one or more file suffix name(Default:_A~_B~_C). e.g(_A or _X~_Y~_Z or more)");
+            Console.WriteLine();
+            Console.WriteLine(StaticData.Param_Default + " : Specify current use default params to execute cmd.");
+            Console.WriteLine();
+            Console.WriteLine(StaticData.Param_Date + " : Specify one date in year or year/month. e.g(yyyy or yyyy/MM)->e.g:(2018 or 2018/06)");
+            Console.WriteLine();
+            Console.WriteLine(StaticData.Param_Time + " : Specify one time in 00:00:00. e.g(23:59:59 or 00:30:00 or 00:00:30)");
+            Console.WriteLine();
+            Console.WriteLine(StaticData.Param_AppendDate + " : Specify Append some month to extra add [" + StaticData.Param_Date + "] param value.(value is month)");
+            Console.WriteLine();
+            Console.WriteLine("#####  Some For Example  ######");
+            Console.WriteLine();
+            Console.WriteLine("LogToolkit {0} {1} {2} {3} C:\\xxxx\\savepath ", StaticData.Param_Menu, StaticData.Menu_CreateFolder, StaticData.Param_Default, StaticData.Param_Output);
+            Console.WriteLine("LogToolkit {0} {1} {2} 2018/06 {3} C:\\xxxx\\savepath {4} _A~_B~_C", StaticData.Param_Menu, StaticData.Menu_CreateFolder, StaticData.Param_Date, StaticData.Param_Output, StaticData.Param_LastName);
+            Console.WriteLine("LogToolkit {0} {1} {2} {3} C:\\xxxx\\inputpath {4} *.rec", StaticData.Param_Menu, StaticData.Menu_ScanFileNotify, StaticData.Param_Default, StaticData.Param_Input, StaticData.Param_FileExt);
+            Console.WriteLine("LogToolkit {0} {1} {2} 00:40:00 {3} C:\\xxxx\\inputpath {4} *.rec", StaticData.Param_Menu, StaticData.Menu_ScanFileNotify, StaticData.Param_Time, StaticData.Param_Input, StaticData.Param_FileExt);
+
+            Console.WriteLine();
+            Console.WriteLine("#####    Print Help Info End    ######");
+            Console.ResetColor();
+        }
+
+    }
+    
+    
+    class CommonMethod
+    {
+        public static void PrintProgress(int sum, int current)
+        {
+            float percent = ((float)current / sum) * 100;
+            Console.Write("{1}{0:00}%", percent, ">");
+            if (percent >= 100)
+            {
+                Console.Write((char)8);
+            }
+            Console.Write((char)8); Console.Write((char)8); Console.Write((char)8);
+        }
+
+        public static void PrintRedInfo(string msg, params object[] arg)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine(msg, arg);
+            Console.ResetColor();
+        }
+
+        public static void PrintGreenInfo(string msg, params object[] arg)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine(msg, arg);
+            Console.ResetColor();
+        }
+
+        public static void PrintYellowInfo(string msg, params object[] arg)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine(msg, arg);
+            Console.ResetColor();
+        }
+
+        public static void PushToEventLog(string msg,EventLogEntryType logtype)
+        {
+            using (EventLog eventLog = new EventLog())
+            {
+                eventLog.Source = "LogToolkit";
+                eventLog.WriteEntry(msg, logtype);
+            }
+        }
+    }
+    
+    
+    class StaticData
+    {
+        /// <summary>
+        /// Param list and value
+        /// </summary>
+        public static Dictionary<string, string> CmdParamList = new Dictionary<string, string>(15);
+
+        /// <summary>
+        /// Registed menu function
+        /// </summary>
+        public static Dictionary<string, Action> RegActionList = new Dictionary<string, Action>(6);
+
+        #region Cmd_Function
+
+        /// <summary>
+        /// cmd by create folder
+        /// </summary>
+        public const string Menu_CreateFolder = "cf";
+
+        public const string Menu_ScanFileNotify = "scan";
+
+        #endregion
+
+        #region Parameters
+
+        /// <summary>
+        /// print summary help info.
+        /// </summary>
+        public const string Param_Help = "-h";
+
+        /// <summary>
+        /// set a menu
+        /// </summary>
+        public const string Param_Menu = "-m";
+
+        /// <summary>
+        /// default value to execute
+        /// </summary>
+        public const string Param_Default = "-def";
+
+        /// <summary>
+        /// set a date
+        /// </summary>
+        public const string Param_Date = "-date";
+
+        /// <summary>
+        /// set a time
+        /// </summary>
+        public const string Param_Time = "-time";
+
+        /// <summary>
+        /// Specify Append Date of some month
+        /// </summary>
+        public const string Param_AppendDate = "-ad";
+
+        /// <summary>
+        /// Specify one output directory or full path filename
+        /// </summary>
+        public const string Param_Output = "-op";
+
+        /// <summary>
+        /// Specify one input directory or full path filename
+        /// </summary>
+        public const string Param_Input = "-ip";
+
+        /// <summary>
+        /// suffix name
+        /// </summary>
+        public const string Param_LastName = "-ln";
+
+        /// <summary>
+        /// Specify file type match formate.
+        /// </summary>
+        public const string Param_FileExt = "-ft";
+       
+
+        #endregion
+
+
+    }
+    
+     public class ScanFileNotifyAction
+    {
+        static bool useDef = false;
+        static bool genSpecifyTime = false;
+        static DateTime setDelayTime = DateTime.Parse("00:30:00");
+        static string scanPath = null;
+        static string fileType = null;
+
+        public static void ScanFileWithNotify()
+        {
+            useDef = StaticData.CmdParamList.ContainsKey(StaticData.Param_Default);
+            genSpecifyTime = StaticData.CmdParamList.ContainsKey(StaticData.Param_Time);
+
+            if (!useDef && !genSpecifyTime)
+            {
+                CommonMethod.PrintRedInfo("Error: Please set scan [before time](" + StaticData.Param_Time + ") by createtime base on current time to compare file or use to ["
+                    + StaticData.Param_Default + "](" + setDelayTime.ToString("HH:mm:ss") + ") to set default time\r\n");
+                return;
+            }
+
+            if (genSpecifyTime)
+            {
+                try
+                {
+                    setDelayTime = DateTime.Parse(StaticData.CmdParamList[StaticData.Param_Time]);
+                }
+                catch
+                {
+                    CommonMethod.PrintRedInfo("Error: Parse time error, please input xx:xx:xx formate.\r\n");
+                    return;
+                }
+            }
+
+            if (!StaticData.CmdParamList.ContainsKey(StaticData.Param_Input) || string.IsNullOrEmpty(scanPath = StaticData.CmdParamList[StaticData.Param_Input]))
+            {
+                CommonMethod.PrintRedInfo("Error: Please set input path[" + StaticData.Param_Input + " value] specify value.\r\n");
+                return;
+            }
+
+            if (!StaticData.CmdParamList.ContainsKey(StaticData.Param_FileExt) || string.IsNullOrEmpty(fileType = StaticData.CmdParamList[StaticData.Param_FileExt]))
+            {
+                CommonMethod.PrintRedInfo("Error: Please set file type[" + StaticData.Param_FileExt + "(*.log or *.rec or *.*) value] specify value.\r\n");
+                return;
+            }
+
+            if (!Directory.Exists(scanPath))
+            {
+                CommonMethod.PrintRedInfo("For [" + scanPath + "] the directory does not exist. exit \r\n");
+                Environment.Exit(0);
+                return;
+            }
+
+            DirectoryInfo di = new DirectoryInfo(scanPath);
+
+            DateTime delayTime = DateTime.Now.AddHours(-setDelayTime.Hour).AddMinutes(-setDelayTime.Minute).AddSeconds(-setDelayTime.Second);
+
+            int filecount = di.GetFiles(fileType, SearchOption.TopDirectoryOnly).Where(p => p.CreationTime < delayTime).Count();
+
+            if (filecount > 0)
+            {
+                using (EventLog eventLog = new EventLog())
+                {
+                    eventLog.Source = "LogToolkit->ScanFileNotify";
+                    string info = "Outstanding recovery files in \"" + scanPath + "\", Need to handle, File type is " + fileType + ",Total: " + filecount;
+                    eventLog.WriteEntry(info, EventLogEntryType.Warning);
+                    CommonMethod.PrintYellowInfo(info);
+                }
+            }
+            else
+            {
+                CommonMethod.PrintGreenInfo("Have not specify scan file to notify by filetype and delay before time.");
+            }
+
+            CommonMethod.PushToEventLog("Executed Scan File Notify Completed!", System.Diagnostics.EventLogEntryType.Information);
+
+            if (Environment.UserInteractive)
+            {
+                Console.WriteLine("Sleep 2s times to end cmd.");
+                Thread.Sleep(2000);
+            }
+        }
+    }
+    
+    
+    public class GenerateFolderAction
+    {
+        static bool genAll_Def = false;
+        static bool genSpecifyDate = false;
+        static string savePath = null;
+        static bool hasPath = false;
+        static string[] defaultSuffix = new string[] { "_A", "_B", "_C" };
+        static int addMonth = 0;
+
+        public static void GenerateInputRange()
+        {
+            genAll_Def = StaticData.CmdParamList.ContainsKey(StaticData.Param_Default);
+            genSpecifyDate = StaticData.CmdParamList.ContainsKey(StaticData.Param_Date);
+
+            if (!genAll_Def && !genSpecifyDate)
+            {
+                CommonMethod.PrintRedInfo("Error: Please input generate all year[" + StaticData.Param_Default + "] or specify datatime[" + StaticData.Param_Date + "] cmd to create folder.\r\n");
+                return;
+            }
+
+            hasPath = StaticData.CmdParamList.ContainsKey(StaticData.Param_Output);
+            if (!hasPath)
+            {
+                CommonMethod.PrintRedInfo("Error: Please input save path[" + StaticData.Param_Output + "] cmd.\r\n");
+                return;
+            }
+
+            savePath = StaticData.CmdParamList[StaticData.Param_Output];
+            if (string.IsNullOrEmpty(savePath))
+            {
+                CommonMethod.PrintRedInfo("Error: Please input save path[" + StaticData.Param_Output + " value] specify value.\r\n");
+                return;
+            }
+
+            if (StaticData.CmdParamList.ContainsKey(StaticData.Param_LastName))
+            {
+                string setLastName = StaticData.CmdParamList[StaticData.Param_LastName];
+                if (setLastName != null)
+                {
+                    defaultSuffix = setLastName.Split(new char[] { '~' }, StringSplitOptions.RemoveEmptyEntries);
+                }
+            }
+
+            CommonMethod.PrintGreenInfo("\r\n\r\nStep 1>: Start execute create folder to [" + savePath + "] path job.");
+
+            if (!Directory.Exists(savePath))
+            {
+                try
+                {
+                    CommonMethod.PrintYellowInfo("Find [" + savePath + "] the directory does not exist, creating...\r\n");
+                    Directory.CreateDirectory(savePath);
+                    CommonMethod.PrintYellowInfo("Created Folder[" + savePath + "] success.\r\n");
+                }
+                catch (Exception ex)
+                {
+                    string erinfo = "Created Folder [" + savePath + "] Error:\r\n" + ex.ToString() + " exit(1).\r\n";
+                    CommonMethod.PrintRedInfo(erinfo);
+                    CommonMethod.PushToEventLog(erinfo, System.Diagnostics.EventLogEntryType.Error);
+                    Environment.Exit(1);
+                }
+            }
+
+            DateTime input_YYYYDD = DateTime.Now;
+            bool isYear = false;
+            if (genSpecifyDate)
+            {
+                try
+                {
+                    string inputTime = StaticData.CmdParamList[StaticData.Param_Date];
+                    if (inputTime.IndexOf("/") < 0)
+                    {
+                        isYear = true;
+                        inputTime += "/1";
+                        genAll_Def = true;
+                        genSpecifyDate = false;
+                    }
+                    input_YYYYDD = DateTime.Parse(inputTime);
+                }
+                catch
+                {
+                    CommonMethod.PrintRedInfo("Error: Parse date error, Please input datetime [" + StaticData.Param_LastName + " date] specify value,e.g(2018/06).\r\n");
+                    return;
+                }
+
+            }
+            else if (genAll_Def)
+            {
+                isYear = true;
+                input_YYYYDD = DateTime.Parse(DateTime.Now.Year + "/1");
+            }
+
+            CommonMethod.PrintGreenInfo("\r\nStep 2>: Generate in (" + (genAll_Def ? input_YYYYDD.Year + "" : (input_YYYYDD.Year + "/" + input_YYYYDD.Month)) + ") all days become to folders.");
+
+            int days = 0;
+            if (genAll_Def)
+            {
+                days = Thread.CurrentThread.CurrentCulture.Calendar.GetDaysInYear(input_YYYYDD.Year);
+            }
+            else if (genSpecifyDate)
+            {
+                days = Thread.CurrentThread.CurrentCulture.Calendar.GetDaysInMonth(input_YYYYDD.Year, input_YYYYDD.Month);
+            }
+
+            if (StaticData.CmdParamList.ContainsKey(StaticData.Param_AppendDate) && (addMonth = int.Parse(StaticData.CmdParamList[StaticData.Param_AppendDate])) <= 0)
+            {
+                CommonMethod.PrintRedInfo("Error: Please set input [" + StaticData.Param_AppendDate + "] specify value,it is number of month.\r\n");
+                return;
+            }
+
+
+            if (addMonth > 0)
+            {
+                int addDays = 0;
+                //if (genAll_Def && addMonth % 12 == 0)
+                //{
+                //    int yearCount = addMonth / 12;
+
+                //    for (int i = 1; i <= yearCount; i++)
+                //    {
+                //        addDays += Thread.CurrentThread.CurrentCulture.Calendar.GetDaysInYear(input_YYYYDD.Year + i);
+                //    }
+                //}
+                //else
+                //{
+                DateTime startCalcDate = input_YYYYDD;
+                DateTime calcTemp;
+                if (genAll_Def || isYear)
+                {
+                    startCalcDate = input_YYYYDD.AddYears(1).AddMonths(-1);
+                }
+                for (int i = 1; i <= addMonth; i++)
+                {
+                    calcTemp = startCalcDate.AddMonths(i);
+                    addDays += Thread.CurrentThread.CurrentCulture.Calendar.GetDaysInMonth(calcTemp.Year, calcTemp.Month);
+                }
+
+                //}
+                days += addDays;
+            }
+
+            CommonMethod.PrintGreenInfo("\r\nStep 3>: Create Day Name Folder Progress: total create num:{0}", days * defaultSuffix.Length);
+
+            int skipFolder = 0;
+            int createFolder = 0;
+            for (int i = 0; i < days; i++)
+            {
+                CommonMethod.PrintProgress(days, i);
+
+                foreach (var suf in defaultSuffix)
+                {
+                    string pathName = string.Format("{0}\\{1}{2}", savePath, input_YYYYDD.AddDays(i).ToString("yyyyMMdd"), suf);
+                    if (!Directory.Exists(pathName))
+                    {
+                        try
+                        {
+                            Directory.CreateDirectory(pathName);
+                            createFolder++;
+                        }
+                        catch (Exception ex)
+                        {
+                            string erinfo = "Created Folder [" + pathName + "] Error:\r\n" + ex.ToString() + " exit(1).\r\n";
+                            CommonMethod.PrintRedInfo(erinfo);
+                            CommonMethod.PushToEventLog(erinfo, System.Diagnostics.EventLogEntryType.Error);
+                            Environment.Exit(1);
+                        }
+                    }
+                    else
+                    {
+                        skipFolder++;
+                    }
+                }
+                if (i % 50 == 0)
+                {
+                    Thread.Sleep(100);
+                }
+            }
+            CommonMethod.PrintProgress(days, days);
+
+            CommonMethod.PrintGreenInfo("\r\nStep 4>: Create Folder Completed! \r\n Summary: Create folder Count: {0}, Skip folder Count:{1}", createFolder, skipFolder);
+            CommonMethod.PrintGreenInfo("\r\nStep 5>: Success generated all days become folders.");
+            CommonMethod.PushToEventLog("Executed Create Folder Completed!", System.Diagnostics.EventLogEntryType.Information);
+            if (Environment.UserInteractive)
+            {
+                Console.WriteLine("Sleep 2s times to end cmd.");
+                Thread.Sleep(2000);
+            }
+
+        }
+
+
+
+
+    }
