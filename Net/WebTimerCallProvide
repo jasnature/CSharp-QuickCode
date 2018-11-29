@@ -1,0 +1,283 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Collections.Concurrent;
+using System.IO;
+
+namespace QuickCode
+{
+    public class WebHookItem
+    {
+        public string PushUrl { get; set; }
+
+        public DateTime SendTime { get; set; }
+
+        public string JsonData { get; set; }
+
+        /// <summary>
+        /// 0 waitRun, 1 CallHttp,2 CallThrowError,3 Done
+        /// </summary>
+        public int ProgressValue { get; set; }
+
+        /// <summary>
+        /// if ProgressValue=2 can get error
+        /// </summary>
+        public Exception CallLastError
+        {
+            get;
+            set;
+        }
+
+        /// <summary>
+        /// currentRetry
+        /// </summary>
+        public int RetryCount { get; set; }
+    }
+
+    /// <summary>
+    /// Base on Timer to call http task
+    /// </summary>
+    public sealed class WebHookProvide
+    {
+        private static object lockObj = new object();
+
+        private static WebHookProvide webhookInstance = null;
+
+        private Timer tasker = null;
+
+        private ConcurrentDictionary<string, WebHookItem> currentTaskList;
+
+        private List<string> waitRemoveTaskList;
+
+        private bool isTimerWorking = false;
+
+        private WebHookProvide()
+        {
+            Init();
+        }
+
+        //public ConcurrentDictionary<string, WebHookItem> GetCurrentTaskList { get { return currentTaskList; } }
+
+        private void Init()
+        {
+            tasker = new Timer(TimerCallback, null, 500, 2000);
+
+            currentTaskList = new ConcurrentDictionary<string, WebHookItem>(5, 10);
+            waitRemoveTaskList = new List<string>(10);
+        }
+
+        private void TimerCallback(object state)
+        {
+            if (isTimerWorking) return;
+            isTimerWorking = true;
+
+            if (currentTaskList.Count <= 0) return;
+            try
+            {
+                PrintMsg("Check Time:{0}", DateTime.Now);
+                foreach (var taskItem in currentTaskList)
+                {
+                    WebHookItem item = taskItem.Value;
+                    if (item.ProgressValue == 1)
+                    {
+                        continue;
+                    }
+                    else if (item.ProgressValue == 3)
+                    {
+                        PrintMsg("waitRemoveTaskList:{0}", item.PushUrl);
+                        waitRemoveTaskList.Add(taskItem.Key);
+                        continue;
+                    }
+                    else if (item.ProgressValue == 2)
+                    {
+                        item.RetryCount++;
+                        int seconds = item.RetryCount * 10;
+                        //max three hours
+                        if (item.RetryCount >= 720)
+                        {
+                            seconds = 720 * 10;
+                        }
+                        item.SendTime = DateTime.Now.AddSeconds(seconds);
+                        item.ProgressValue = 0;
+                    }
+
+                    if (DateTime.Now < item.SendTime) continue;
+
+                    Task.Factory.StartNew((obj) =>
+                    {
+                        WebHookItem item_task = obj as WebHookItem;
+
+                        item_task.ProgressValue = 1;
+
+                        if (item_task == null) return;
+
+                        PrintMsg("Task.Factory.StartNew->>>>>>Start URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.JsonData, item_task.ProgressValue);
+
+                        try
+                        {
+                            System.Net.HttpStatusCode code = PushHttpRequest(item_task);
+                            if (code == System.Net.HttpStatusCode.OK)
+                            {
+                                item_task.ProgressValue = 3;
+                                PrintMsg("Task.Factory.StartNew->>>>>>End Success URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.JsonData, item_task.ProgressValue);
+                            }
+                            else
+                            {
+                                new System.Net.WebException("Call Error:" + code.ToString());
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            item_task.ProgressValue = 2;
+                            item_task.CallLastError = ex;
+                            PrintMsg("Task.Factory.StartNew->>>>>>End Error URL={0},DATA={1},retry={2}", item_task.PushUrl, item_task.JsonData, item_task.RetryCount);
+                        }
+
+                        
+
+                    }, item);
+
+                }
+
+                WebHookItem item1 = null;
+                foreach (var keyitem in waitRemoveTaskList)
+                {
+                    currentTaskList.TryRemove(keyitem, out item1);
+                    PrintMsg("TryRemove:{0}", item1.PushUrl);
+                }
+                waitRemoveTaskList.Clear();
+            }
+            catch (Exception ex)
+            {
+                PrintMsg(ex.ToString());
+            }
+            finally
+            {
+                isTimerWorking = false;
+            }
+        }
+
+        private System.Net.HttpStatusCode PushHttpRequest(WebHookItem item)
+        {
+            PrintMsg("[PushHttpRequest]->>>>URL={0},DATA={1}", item.PushUrl, item.JsonData);
+
+            System.Net.HttpWebRequest request = System.Net.HttpWebRequest.CreateHttp(item.PushUrl);
+            request.Method = System.Net.WebRequestMethods.Http.Post;
+            request.ContentType = "text/json";
+
+            byte[] datas = Encoding.UTF8.GetBytes(item.JsonData);
+
+            request.ContentLength = datas.Length;
+
+            using (Stream reqStream = request.GetRequestStream())
+            {
+                reqStream.Write(datas, 0, datas.Length);
+                using (System.Net.HttpWebResponse response = (System.Net.HttpWebResponse)request.GetResponse())
+                {
+                    return response.StatusCode;
+                }
+            }
+        }
+
+        public bool PushMsg(string url, string encryptJsonData, TimeSpan? delayTime = null)
+        {
+            WebHookItem whi;
+            try
+            {
+                whi = new WebHookItem()
+                   {
+                       PushUrl = url,
+                       JsonData = encryptJsonData
+                   };
+                if (delayTime != null && delayTime.Value.TotalSeconds > 0)
+                {
+                    whi.SendTime = DateTime.Now.Add(delayTime.Value);
+                }
+
+                int retry = 0;
+                bool result = false;
+                string key = Guid.NewGuid().ToString("N");
+                while (!result)
+                {
+                    PrintMsg("PushMsg->>>>>>Start URL={0},DATA={1},stat={2}", whi.PushUrl, whi.JsonData, whi.ProgressValue);
+                    result = currentTaskList.TryAdd(key, whi);
+                    if (retry >= 3)
+                    {
+                        break;
+                    }
+                    Thread.Sleep(50);
+                    retry++;
+                }
+                return result;
+            }
+            catch (Exception ex)
+            {
+                return false;
+            }
+        }
+
+        public bool RemoveMsg(string key)
+        {
+            isTimerWorking = true;
+            WebHookItem remove = null;
+            StopTask();
+            try
+            {
+                return currentTaskList.TryRemove(key, out remove);
+            }
+            finally
+            {
+                isTimerWorking = false;
+                StartTask();
+            }
+        }
+
+        public bool StopTask()
+        {
+            return tasker.Change(Timeout.Infinite, 1000000000);
+        }
+
+        public bool StartTask()
+        {
+            return tasker.Change(500, 2000);
+        }
+
+        public static WebHookProvide Instance()
+        {
+            if (webhookInstance == null)
+            {
+                lock (lockObj)
+                {
+                    //double check
+                    if (webhookInstance == null)
+                    {
+                        return new WebHookProvide();
+                    }
+
+                }
+            }
+
+            return webhookInstance;
+        }
+
+        private void PrintMsg(string formate, params object[] values)
+        {
+#if DEBUG
+            Console.WriteLine(formate, values);
+            System.Diagnostics.Debug.WriteLine(formate, values);
+#endif
+
+        }
+
+    }
+
+
+
+
+
+
+
+}
