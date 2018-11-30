@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
 using System.IO;
+using System.Net;
 
 namespace QuickCode
 {
@@ -54,16 +55,20 @@ namespace QuickCode
 
         private bool isTimerWorking = false;
 
+        private int DoneCount = 0;
+
         private WebHookProvide()
         {
             Init();
         }
 
-        //public ConcurrentDictionary<string, WebHookItem> GetCurrentTaskList { get { return currentTaskList; } }
+        public ConcurrentDictionary<string, WebHookItem> GetCurrentTaskList { get { return currentTaskList; } }
+
+        public int GetCurrentTaskCount { get { return currentTaskList.Count; } }
 
         private void Init()
         {
-            tasker = new Timer(TimerCallback, null, 500, 2000);
+            tasker = new Timer(TimerCallback, null, 500, 1000);
 
             currentTaskList = new ConcurrentDictionary<string, WebHookItem>(5, 10);
             waitRemoveTaskList = new List<string>(10);
@@ -72,91 +77,103 @@ namespace QuickCode
         private void TimerCallback(object state)
         {
             if (isTimerWorking) return;
-            isTimerWorking = true;
 
-            if (currentTaskList.Count <= 0) return;
-            try
+            lock (lockObj)
             {
-                PrintMsg("Check Time:{0}", DateTime.Now);
-                foreach (var taskItem in currentTaskList)
+                isTimerWorking = true;
+                
+                try
                 {
-                    WebHookItem item = taskItem.Value;
-                    if (item.ProgressValue == 1)
+                    if (currentTaskList.Count <= 0) return;
+
+                    PrintMsg("Check Time:{0},Done:{1}", DateTime.Now, DoneCount);
+
+                    //cast to temp, no effect new add task
+                    string[] currentKeys = currentTaskList.Keys.ToArray();
+
+                    foreach (var taskKey in currentKeys)
                     {
-                        continue;
-                    }
-                    else if (item.ProgressValue == 3)
-                    {
-                        PrintMsg("waitRemoveTaskList:{0}", item.PushUrl);
-                        waitRemoveTaskList.Add(taskItem.Key);
-                        continue;
-                    }
-                    else if (item.ProgressValue == 2)
-                    {
-                        item.RetryCount++;
-                        int seconds = item.RetryCount * 10;
-                        //max three hours
-                        if (item.RetryCount >= 720)
+                        WebHookItem item = currentTaskList[taskKey];
+                        //if (!currentTaskList.TryGetValue(taskKey, out item)) continue;
+
+                        if (item.ProgressValue == 1)
                         {
-                            seconds = 720 * 10;
+                            continue;
                         }
-                        item.SendTime = DateTime.Now.AddSeconds(seconds);
-                        item.ProgressValue = 0;
-                    }
-
-                    if (DateTime.Now < item.SendTime) continue;
-
-                    Task.Factory.StartNew((obj) =>
-                    {
-                        WebHookItem item_task = obj as WebHookItem;
-
-                        item_task.ProgressValue = 1;
-
-                        if (item_task == null) return;
-
-                        PrintMsg("Task.Factory.StartNew->>>>>>Start URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.JsonData, item_task.ProgressValue);
-
-                        try
+                        else if (item.ProgressValue == 3)
                         {
-                            System.Net.HttpStatusCode code = PushHttpRequest(item_task);
-                            if (code == System.Net.HttpStatusCode.OK)
+                            PrintMsg("waitRemoveTaskList:{0}", item.PushUrl);
+                            waitRemoveTaskList.Add(taskKey);
+                            continue;
+                        }
+                        else if (item.ProgressValue == 2)
+                        {
+                            item.RetryCount++;
+                            int seconds = item.RetryCount * 10;
+                            //max three hours
+                            if (item.RetryCount >= 720)
                             {
-                                item_task.ProgressValue = 3;
-                                PrintMsg("Task.Factory.StartNew->>>>>>End Success URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.JsonData, item_task.ProgressValue);
+                                seconds = 720 * 10;
                             }
-                            else
-                            {
-                                new System.Net.WebException("Call Error:" + code.ToString());
-                            }
+                            item.SendTime = DateTime.Now.AddSeconds(seconds);
+                            item.ProgressValue = 0;
+                            continue;
                         }
-                        catch (Exception ex)
+
+                        if (DateTime.Now < item.SendTime) continue;
+
+                        item.ProgressValue = 1;
+
+                        Task.Factory.StartNew((obj) =>
                         {
-                            item_task.ProgressValue = 2;
-                            item_task.CallLastError = ex;
-                            PrintMsg("Task.Factory.StartNew->>>>>>End Error URL={0},DATA={1},retry={2}", item_task.PushUrl, item_task.JsonData, item_task.RetryCount);
-                        }
+                            WebHookItem item_task = obj as WebHookItem;
 
-                        
+                            if (item_task == null) return;
 
-                    }, item);
+                            PrintMsg("Task.Factory.StartNew->>>>>>Start URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.JsonData, item_task.ProgressValue);
+
+                            try
+                            {
+                                System.Net.HttpStatusCode code = PushHttpRequest(item_task);
+                                if (code == System.Net.HttpStatusCode.OK)
+                                {
+                                    Interlocked.Increment(ref DoneCount);
+                                    item_task.ProgressValue = 3;
+                                    PrintMsg("Task.Factory.StartNew->>>>>>End-{3} Success URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.JsonData, item_task.ProgressValue, DoneCount);
+                                }
+                                else
+                                {
+                                    new System.Net.WebException("Call Error:" + code.ToString());
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                item_task.ProgressValue = 2;
+                                item_task.CallLastError = ex;
+                                PrintMsg("Task.Factory.StartNew->>>>>>End Error URL={0},DATA={1},retry={2}", item_task.PushUrl, item_task.JsonData, item_task.RetryCount);
+                            }
+
+                        }, item);
+
+                    }
+
+                    WebHookItem item1 = null;
+                    foreach (var keyitem in waitRemoveTaskList)
+                    {
+                        currentTaskList.TryRemove(keyitem, out item1);
+                        PrintMsg("TryRemove:{0}", item1.PushUrl);
+                    }
+                    waitRemoveTaskList.Clear();
 
                 }
-
-                WebHookItem item1 = null;
-                foreach (var keyitem in waitRemoveTaskList)
+                catch (Exception ex)
                 {
-                    currentTaskList.TryRemove(keyitem, out item1);
-                    PrintMsg("TryRemove:{0}", item1.PushUrl);
+                    PrintMsg(ex.ToString());
                 }
-                waitRemoveTaskList.Clear();
-            }
-            catch (Exception ex)
-            {
-                PrintMsg(ex.ToString());
-            }
-            finally
-            {
-                isTimerWorking = false;
+                finally
+                {
+                    isTimerWorking = false;
+                }
             }
         }
 
@@ -164,9 +181,9 @@ namespace QuickCode
         {
             PrintMsg("[PushHttpRequest]->>>>URL={0},DATA={1}", item.PushUrl, item.JsonData);
 
-            System.Net.HttpWebRequest request = System.Net.HttpWebRequest.CreateHttp(item.PushUrl);
-            request.Method = System.Net.WebRequestMethods.Http.Post;
-            request.ContentType = "text/json";
+            HttpWebRequest request = HttpWebRequest.CreateHttp(item.PushUrl);
+            request.Method = WebRequestMethods.Http.Post;
+            request.ContentType = "text/plain";
 
             byte[] datas = Encoding.UTF8.GetBytes(item.JsonData);
 
@@ -206,6 +223,7 @@ namespace QuickCode
                     result = currentTaskList.TryAdd(key, whi);
                     if (retry >= 3)
                     {
+                        PrintMsg("PushMsg->>>>>>Retry={0}", retry);
                         break;
                     }
                     Thread.Sleep(50);
