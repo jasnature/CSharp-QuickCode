@@ -16,7 +16,7 @@ namespace QuickCode
 
         public DateTime SendTime { get; set; }
 
-        public string JsonData { get; set; }
+        public string BodyData { get; set; }
 
         /// <summary>
         /// 0 waitRun, 1 CallHttp,2 CallThrowError,3 Done
@@ -47,28 +47,39 @@ namespace QuickCode
 
         private static WebHookProvide webhookInstance = null;
 
-        private Timer tasker = null;
+        private static Timer tasker = null;
 
-        private ConcurrentDictionary<string, WebHookItem> currentTaskList;
+        private static ConcurrentDictionary<string, WebHookItem> currentTaskList;
 
-        private List<string> waitRemoveTaskList;
+        private static List<string> waitRemoveTaskList;
 
-        private bool isTimerWorking = false;
+        private static bool isTimerWorking = false;
 
-        private int DoneCount = 0;
+        private static int DoneSumCount = 0;
 
-        private WebHookProvide()
-        {
-            Init();
-        }
+        private static SemaphoreSlim ChannelTask;
 
         public ConcurrentDictionary<string, WebHookItem> GetCurrentTaskList { get { return currentTaskList; } }
 
         public int GetCurrentTaskCount { get { return currentTaskList.Count; } }
 
+        public int GetDoneSumCount { get { return DoneSumCount; } }
+
+        ~WebHookProvide()
+        {
+            tasker.Dispose();
+        }
+
+        private WebHookProvide(int maxThreadNum)
+        {
+            ChannelTask = new SemaphoreSlim(maxThreadNum, maxThreadNum);
+
+            Init();
+        }
+
         private void Init()
         {
-            tasker = new Timer(TimerCallback, null, 500, 1000);
+            tasker = new Timer(TimerCallback, null, 500, 2000);
 
             currentTaskList = new ConcurrentDictionary<string, WebHookItem>(5, 10);
             waitRemoveTaskList = new List<string>(10);
@@ -81,12 +92,12 @@ namespace QuickCode
             lock (lockObj)
             {
                 isTimerWorking = true;
-                
+
                 try
                 {
                     if (currentTaskList.Count <= 0) return;
 
-                    PrintMsg("Check Time:{0},Done:{1}", DateTime.Now, DoneCount);
+                    PrintMsg("Check Time:{0},Done:{1},AvailableThreadNum={2}", DateTime.Now, DoneSumCount, ChannelTask.CurrentCount);
 
                     //cast to temp, no effect new add task
                     string[] currentKeys = currentTaskList.Keys.ToArray();
@@ -122,24 +133,28 @@ namespace QuickCode
 
                         if (DateTime.Now < item.SendTime) continue;
 
+
+                        if (!ChannelTask.Wait(TimeSpan.FromSeconds(10))) continue;
+                        
                         item.ProgressValue = 1;
 
                         Task.Factory.StartNew((obj) =>
                         {
-                            WebHookItem item_task = obj as WebHookItem;
-
-                            if (item_task == null) return;
-
-                            PrintMsg("Task.Factory.StartNew->>>>>>Start URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.JsonData, item_task.ProgressValue);
-
+                            WebHookItem item_task = null;
                             try
                             {
+                                item_task = obj as WebHookItem;
+
+                                if (item_task == null) return;
+
+                                PrintMsg("Task.Factory.StartNew->>>>>>Start URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.BodyData, item_task.ProgressValue);
+
                                 System.Net.HttpStatusCode code = PushHttpRequest(item_task);
                                 if (code == System.Net.HttpStatusCode.OK)
                                 {
-                                    Interlocked.Increment(ref DoneCount);
+                                    Interlocked.Increment(ref DoneSumCount);
                                     item_task.ProgressValue = 3;
-                                    PrintMsg("Task.Factory.StartNew->>>>>>End-{3} Success URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.JsonData, item_task.ProgressValue, DoneCount);
+                                    PrintMsg("Task.Factory.StartNew->>>>>>End-{3} Success URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.BodyData, item_task.ProgressValue, DoneSumCount);
                                 }
                                 else
                                 {
@@ -148,9 +163,18 @@ namespace QuickCode
                             }
                             catch (Exception ex)
                             {
-                                item_task.ProgressValue = 2;
-                                item_task.CallLastError = ex;
-                                PrintMsg("Task.Factory.StartNew->>>>>>End Error URL={0},DATA={1},retry={2}", item_task.PushUrl, item_task.JsonData, item_task.RetryCount);
+                                if (item_task != null)
+                                {
+                                    item_task.ProgressValue = 2;
+                                    item_task.CallLastError = ex;
+                                }
+
+                                PrintMsg("Task.Factory.StartNew->>>>>>End Error URL={0},DATA={1},retry={2}", item_task.PushUrl, item_task.BodyData, item_task.RetryCount);
+                            }
+                            finally
+                            {
+                                ChannelTask.Release();
+                                PrintMsg("Task.Factory.StartNew->>>>>>End Release");
                             }
 
                         }, item);
@@ -179,13 +203,13 @@ namespace QuickCode
 
         private System.Net.HttpStatusCode PushHttpRequest(WebHookItem item)
         {
-            PrintMsg("[PushHttpRequest]->>>>URL={0},DATA={1}", item.PushUrl, item.JsonData);
+            PrintMsg("[PushHttpRequest]->>>>URL={0},DATA={1}", item.PushUrl, item.BodyData);
 
             HttpWebRequest request = HttpWebRequest.CreateHttp(item.PushUrl);
             request.Method = WebRequestMethods.Http.Post;
             request.ContentType = "text/plain";
 
-            byte[] datas = Encoding.UTF8.GetBytes(item.JsonData);
+            byte[] datas = Encoding.UTF8.GetBytes(item.BodyData);
 
             request.ContentLength = datas.Length;
 
@@ -199,7 +223,17 @@ namespace QuickCode
             }
         }
 
-        public bool PushMsg(string url, string encryptJsonData, TimeSpan? delayTime = null)
+        public bool PushMsg(string url, string pushData, int? delayBySecond = null)
+        {
+            TimeSpan? delayTime = null;
+            if (delayBySecond != null)
+            {
+                delayTime = TimeSpan.FromSeconds((double)delayBySecond);
+            }
+            return PushMsg(url, pushData, delayTime);
+        }
+
+        public bool PushMsg(string url, string pushData, TimeSpan? delayTime = null)
         {
             WebHookItem whi;
             try
@@ -207,7 +241,7 @@ namespace QuickCode
                 whi = new WebHookItem()
                    {
                        PushUrl = url,
-                       JsonData = encryptJsonData
+                       BodyData = pushData
                    };
                 if (delayTime != null && delayTime.Value.TotalSeconds > 0)
                 {
@@ -219,7 +253,7 @@ namespace QuickCode
                 string key = Guid.NewGuid().ToString("N");
                 while (!result)
                 {
-                    PrintMsg("PushMsg->>>>>>Start URL={0},DATA={1},stat={2}", whi.PushUrl, whi.JsonData, whi.ProgressValue);
+                    PrintMsg("PushMsg->>>>>>Start URL={0},DATA={1},stat={2}", whi.PushUrl, whi.BodyData, whi.ProgressValue);
                     result = currentTaskList.TryAdd(key, whi);
                     if (retry >= 3)
                     {
@@ -263,7 +297,12 @@ namespace QuickCode
             return tasker.Change(500, 2000);
         }
 
-        public static WebHookProvide Instance()
+        /// <summary>
+        /// Instance WebHookProvide
+        /// </summary>
+        /// <param name="maxThreadNum">maxThreadNum</param>
+        /// <returns></returns>
+        public static WebHookProvide Instance(Int16 maxThreadNum = 50)
         {
             if (webhookInstance == null)
             {
@@ -272,7 +311,7 @@ namespace QuickCode
                     //double check
                     if (webhookInstance == null)
                     {
-                        return new WebHookProvide();
+                        return new WebHookProvide(maxThreadNum);
                     }
 
                 }
