@@ -95,7 +95,7 @@ namespace QuickCode
 
                 try
                 {
-                    if (currentTaskList.Count <= 0) return;
+                    if (currentTaskList.Count <= 0 && waitRemoveTaskList.Count <= 0) return;
 
                     PrintMsg("Check Time:{0},Done:{1},AvailableThreadNum={2}", DateTime.Now, DoneSumCount, ChannelTask.CurrentCount);
 
