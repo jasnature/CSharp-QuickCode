@@ -216,7 +216,15 @@ namespace TimerCallHttpProvide
         {
             PrintMsg("[PushHttpRequest]->>>>URL={0},DATA={1}", item.PushUrl, item.BodyData);
 
-            HttpWebRequest request = HttpWebRequest.CreateHttp(item.PushUrl);
+            Uri url = new Uri(item.PushUrl);
+            HttpWebRequest request = HttpWebRequest.CreateHttp(url);
+            if (url.Scheme.Equals("https", StringComparison.CurrentCultureIgnoreCase))
+            {
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+                ServicePointManager.ServerCertificateValidationCallback = RemoteCertificateValidationCallback;
+                ServicePointManager.CheckCertificateRevocationList = false;
+                ServicePointManager.Expect100Continue = false;
+            }
             request.Method = WebRequestMethods.Http.Post;
             //request.ContentType = "text/plain";
             request.ContentType = HttpContentType;
