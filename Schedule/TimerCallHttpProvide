@@ -7,8 +7,9 @@ using System.Threading.Tasks;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
+using BankApiCore.Util;
 
-namespace QuickCode
+namespace TimerCallHttpProvide
 {
     public class WebHookItem
     {
@@ -65,9 +66,17 @@ namespace QuickCode
 
         public int GetDoneSumCount { get { return DoneSumCount; } }
 
+        private static string HttpContentType = "application/json";
+
         ~WebHookProvide()
         {
             tasker.Dispose();
+        }
+
+        private WebHookProvide()
+            : this(50)
+        {
+
         }
 
         private WebHookProvide(int maxThreadNum)
@@ -135,7 +144,7 @@ namespace QuickCode
 
 
                         if (!ChannelTask.Wait(TimeSpan.FromSeconds(10))) continue;
-                        
+
                         item.ProgressValue = 1;
 
                         Task.Factory.StartNew((obj) =>
@@ -149,16 +158,17 @@ namespace QuickCode
 
                                 PrintMsg("Task.Factory.StartNew->>>>>>Start URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.BodyData, item_task.ProgressValue);
 
-                                System.Net.HttpStatusCode code = PushHttpRequest(item_task);
-                                if (code == System.Net.HttpStatusCode.OK)
+                                HttpStatusCode code = PushHttpRequest(item_task);
+                                if (code == HttpStatusCode.OK)
                                 {
                                     Interlocked.Increment(ref DoneSumCount);
                                     item_task.ProgressValue = 3;
                                     PrintMsg("Task.Factory.StartNew->>>>>>End-{3} Success URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.BodyData, item_task.ProgressValue, DoneSumCount);
+                                    LogUtil.Log.Info("[WebHook Success] PushUrl={0},PreSendTime={1}", item_task.PushUrl, item_task.SendTime);
                                 }
                                 else
                                 {
-                                    new System.Net.WebException("Call Error:" + code.ToString());
+                                    new WebException("Call Error:" + code.ToString());
                                 }
                             }
                             catch (Exception ex)
@@ -168,7 +178,7 @@ namespace QuickCode
                                     item_task.ProgressValue = 2;
                                     item_task.CallLastError = ex;
                                 }
-
+                                //LogUtil.Log.Error(ex);
                                 PrintMsg("Task.Factory.StartNew->>>>>>End Error URL={0},DATA={1},retry={2}", item_task.PushUrl, item_task.BodyData, item_task.RetryCount);
                             }
                             finally
@@ -193,6 +203,7 @@ namespace QuickCode
                 catch (Exception ex)
                 {
                     PrintMsg(ex.ToString());
+                    //LogUtil.Log.Error(ex);
                 }
                 finally
                 {
@@ -207,7 +218,9 @@ namespace QuickCode
 
             HttpWebRequest request = HttpWebRequest.CreateHttp(item.PushUrl);
             request.Method = WebRequestMethods.Http.Post;
-            request.ContentType = "text/plain";
+            //request.ContentType = "text/plain";
+            request.ContentType = HttpContentType;
+
 
             byte[] datas = Encoding.UTF8.GetBytes(item.BodyData);
 
@@ -221,6 +234,11 @@ namespace QuickCode
                     return response.StatusCode;
                 }
             }
+        }
+
+        public void ResetContentType(string contentType)
+        {
+            HttpContentType = contentType;
         }
 
         public bool PushMsg(string url, string pushData, int? delayBySecond = null)
@@ -267,22 +285,22 @@ namespace QuickCode
             }
             catch (Exception ex)
             {
+                LogUtil.Log.Error(ex);
                 return false;
             }
         }
 
-        public bool RemoveMsg(string key)
+        public void RemoveMsg(string key)
         {
-            isTimerWorking = true;
-            WebHookItem remove = null;
-            StopTask();
             try
             {
-                return currentTaskList.TryRemove(key, out remove);
+                //WebHookItem remove = null;
+                StopTask();
+                waitRemoveTaskList.Add(key);
+                //return currentTaskList.TryRemove(key, out remove);
             }
             finally
             {
-                isTimerWorking = false;
                 StartTask();
             }
         }
