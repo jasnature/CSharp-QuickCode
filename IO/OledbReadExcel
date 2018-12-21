@@ -1,0 +1,485 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Data.OleDb;
+using System.Data;
+using BankApiCore.Util;
+using BankApiCore.Data;
+using System.Reflection;
+using BankApiCore.Model;
+
+namespace OledbReadExcel
+{
+
+    /// <summary>
+    /// data import handle
+    /// </summary>
+    public sealed class ImportTemplateDataHandle
+    {
+        public const string dda_init = "dda-init";
+        public const string dda_webhook = "dda-webhook";
+        public const string dda_status = "dda-status";
+
+        public const string ddi_init = "ddi-init";
+        public const string ddi_webhook = "ddi-webhook";
+        public const string ddi_status = "ddi-status";
+
+        public const string payment_init = "payment-init";
+        public const string payment_webhook = "payment-webhook";
+        public const string payment_status = "payment-status";
+
+
+        public int TemplateCompletedSum = 0;
+        public int TemplateSum = 0;
+        public string StatusMessage = string.Empty;
+
+        private static object lockObj = new object();
+
+        private static ImportTemplateDataHandle importTemplateInstance = null;
+
+        public bool IsExec = false;
+
+        public string SavePath = "";
+
+        public Dictionary<string, Dictionary<string, DataRow>> FromPareseExcelData = new Dictionary<string, Dictionary<string, DataRow>>(10);
+
+        private ImportTemplateDataHandle(string bpath)
+        {
+            SavePath = Path.Combine(bpath, "ReplayTemplate", "GenDataTemp");
+            if (!Directory.Exists(SavePath))
+            {
+                Directory.CreateDirectory(SavePath);
+            }
+        }
+
+        public static ImportTemplateDataHandle Instance(string bpath)
+        {
+            if (importTemplateInstance == null)
+            {
+                lock (lockObj)
+                {
+                    //double check
+                    if (importTemplateInstance == null)
+                    {
+                        return new ImportTemplateDataHandle(bpath);
+                    }
+
+                }
+            }
+
+            return importTemplateInstance;
+        }
+
+        /// <summary>
+        /// Num in sum percent
+        /// </summary>
+        /// <param name="percentNum">num of percent(0.01-1)</param>
+        /// <returns></returns>
+        private int CalcNumPercent(float percentNum)
+        {
+            double pp1 = (double)(this.TemplateSum * percentNum);
+            return (int)Math.Floor(pp1);
+        }
+
+        private void ResetData()
+        {
+            GlobalDefineParams.ImportDataHandle.TemplateCompletedSum = 0;
+            GlobalDefineParams.ImportDataHandle.TemplateSum = 0;
+            this.StatusMessage = string.Empty;
+            this.FromPareseExcelData.Clear();
+            msgIndex = 1;
+        }
+
+        private int msgIndex = 1;
+        private void PushMsg(string msg, int levelError = 0)
+        {
+            if (levelError == 1)
+            {
+                msg = "<b style='color:#bdca1b'>" + msg + "</b>";
+            }
+            else if (levelError == 2)
+            {
+                msg = "<b style='color:red'>" + msg + "</b>";
+            }
+
+            this.StatusMessage = "<br/><b>" + string.Format("{0:000}", msgIndex) + "</b> -&gt; " + msg + this.StatusMessage;
+
+            msgIndex++;
+        }
+
+        public bool StartExecute()
+        {
+            if (IsExec) return false;
+            IsExec = true;
+
+            ResetData();
+
+            Task.Run(() =>
+            {
+                string useFilePath = null;
+                try
+                {
+                    this.PushMsg("Load Excel Data to memory and Parse data to map start...");
+                    string[] files = Directory.GetFiles(BankApiCore.GlobalDefineParams.ImportDataHandle.SavePath, "*.xls", SearchOption.TopDirectoryOnly);
+
+                    if (files != null && files.Length > 0)
+                    {
+                        useFilePath = files[0];
+                        using (DataSet dataset = ReadExcelToTable(useFilePath))
+                        {
+                            Interlocked.Add(ref GlobalDefineParams.ImportDataHandle.TemplateCompletedSum, CalcNumPercent(0.05f));
+                            ParseExecelToMap(dataset);
+                            Thread.Sleep(100);
+                            Interlocked.Add(ref GlobalDefineParams.ImportDataHandle.TemplateCompletedSum, CalcNumPercent(0.05f));
+                            this.PushMsg("Parse data to map compledted ...");
+                        }
+
+                        if (FromPareseExcelData != null && FromPareseExcelData.Count > 0)
+                        {
+                            int successCount = 0;
+                            this.PushMsg("Start Read data and convert to Account mapping config...");
+
+                            AccountCustomData data = null;
+
+                            foreach (var account in FromPareseExcelData[dda_init].Keys)
+                            {
+                                try
+                                {
+                                    data = new AccountCustomData();
+                                    //case "dda-init":
+                                    //case "dda-webhook":
+                                    //case "dda-status":
+                                    if (!HandleDDA(account, data)) continue;
+
+                                    //case "ddi-init":
+                                    //case "ddi-webhook":
+                                    //case "ddi-status":
+                                    if (!HandleDDI(account, data)) continue;
+
+                                    //case "payment-init":
+                                    //case "payment-webhook":
+                                    //case "payment-status":
+                                    if (!HandlePayment(account, data)) continue;
+
+                                    string result = GlobalDefineParams.UpdatedAccountCustomData_BaseOnVersion(data);
+                                    if (result.Equals("success"))
+                                    {
+                                        successCount += 9;
+                                    }
+                                    else
+                                    {
+                                        this.PushMsg("Merger and Save Process result" + account + ":" + result, 2);
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    this.PushMsg(ex.ToString(), 2);
+                                    LogUtil.Log.Error(ex);
+                                }
+                                finally
+                                {
+                                    Thread.Sleep(20);
+                                    Interlocked.Add(ref GlobalDefineParams.ImportDataHandle.TemplateCompletedSum, CalcNumPercent((float)7/this.TemplateSum));
+                                }
+                            }
+
+                            this.PushMsg(string.Format("<b style='color:blue'>Import Account to match mapping config completed!!!, result:data Sum={0},data success={1},data failed={2}</b>, <b style='color:green'>Merger account data: {3} </b>", this.TemplateSum, successCount, this.TemplateSum - successCount, successCount / 9));
+                        }
+
+                        if (useFilePath != null)
+                        {
+                            FromPareseExcelData.Clear();
+#if !DEBUG
+                            this.PushMsg("Delete template file...");
+                            File.Delete(useFilePath);
+#endif
+                        }
+
+                    }
+
+                }
+                catch (Exception ex)
+                {
+                    this.PushMsg(ex.ToString(),2);
+                    LogUtil.Log.Error(ex);
+                }
+                finally
+                {
+                    this.TemplateCompletedSum = this.TemplateSum;
+                    IsExec = false;
+                }
+
+            });
+
+            return true;
+        }
+
+        private void ParseExecelToMap(DataSet ds)
+        {
+            int lastCount = 0;
+
+            foreach (DataTable table in ds.Tables)
+            {
+                this.PushMsg(string.Format("Sheet-<b>[{0}]</b>-,Data Row: (<b>{1}</b>)", table.TableName, table.Rows.Count));
+                lastCount = table.Rows.Count;
+                Dictionary<string, DataRow> keyp = new Dictionary<string, DataRow>(lastCount + 1);
+
+                foreach (DataRow item in table.Rows)
+                {
+                    string account = item["accountId"].ToString();
+                    if (!keyp.ContainsKey(account))
+                    {
+                        keyp.Add(account, item);
+                    }
+                }
+
+                this.FromPareseExcelData.Add(table.TableName, keyp);
+
+                Thread.Sleep(50);
+            }
+
+        }
+
+        string columnErrorTmp = "Warning: At row of account[{0}] and column name[{1}] data formate incorrect in [{2}] sheet,will be ignore and skip this row data.";
+        private T ReflectSaveData<T>(DataRow row, T data)
+            where T : class
+        {
+            Type typed = typeof(T);
+            PropertyInfo[] properList = typed.GetProperties();
+            foreach (var pp in properList)
+            {
+                if (row.Table.Columns.Contains(pp.Name.ToLower()))
+                {
+                    try
+                    {
+                        var va = row[pp.Name.ToLower()];
+                        if (va != DBNull.Value && pp.CanWrite)
+                        {
+                            object chengedObj = Convert.ChangeType(va, pp.PropertyType);
+                            pp.SetValue(data, chengedObj);
+                            //if (va is Double || va is int || va is Int32 || va is float)
+                            //{
+                            //    if (pp.PropertyType.Name.ToLower() == "string")
+                            //    {
+                            //        pp.SetValue(data, Convert.ToInt32(va).ToString());
+                            //    }
+                            //    else
+                            //    {
+                            //        pp.SetValue(data, Convert.ToInt32(va));
+                            //    }
+                            //}
+                            //else
+                            //{
+                            //    pp.SetValue(data, va);
+                            //}
+                        }
+                        else if (pp.CanWrite)
+                        {
+                            switch (pp.PropertyType.Name.ToLower())
+                            {
+                                case "string":
+                                    pp.SetValue(data, "");
+                                    break;
+                                case "int32":
+                                case "int":
+                                case "int64":
+                                    pp.SetValue(data, 0);
+                                    break;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+
+                        string lasterror = string.Format(columnErrorTmp, row["accountId"], pp.Name, row.Table.TableName);
+                        throw new Exception(lasterror, ex);
+                    }
+                }
+            }
+
+            return data;
+        }
+
+        string accountNotFoundTmp = "Warning: Account-[{0}] not found in [{1}] sheet,will be ignore and skip this data.";
+        private bool HandleDDA(string account, AccountCustomData data)
+        {
+            try
+            {
+                DataRow row = null;
+                data.accountId = account;
+                data.enable = true;
+                data.version = DateTime.Now.Ticks;
+
+                if (!this.FromPareseExcelData[dda_init].TryGetValue(account, out row))
+                {
+                    PushMsg(string.Format(accountNotFoundTmp, account, dda_init), 1);
+                    return false;
+                }
+                data.ddainitiate = this.ReflectSaveData<OpenAPIDirectDebitResponse>(row, new OpenAPIDirectDebitResponse());
+
+                if (!this.FromPareseExcelData[dda_status].TryGetValue(account, out row))
+                {
+                    PushMsg(string.Format(accountNotFoundTmp, account, dda_status), 1);
+                    return false;
+                }
+                data.ddastatus = this.ReflectSaveData<OpenAPIDirectDebitHeaderResponse>(row, new OpenAPIDirectDebitHeaderResponse());
+
+                if (!this.FromPareseExcelData[dda_webhook].TryGetValue(account, out row))
+                {
+                    PushMsg(string.Format(accountNotFoundTmp, account, dda_webhook), 1);
+                    return false;
+                }
+                data.webhookdda = this.ReflectSaveData<WebHookDDA>(row, new WebHookDDA());
+
+            }
+            catch (Exception ex)
+            {
+                LogUtil.Log.Error(ex.InnerException);
+                PushMsg(ex.Message, 1);
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool HandleDDI(string account, AccountCustomData data)
+        {
+            try
+            {
+                DataRow row = null;
+
+                if (!this.FromPareseExcelData[ddi_init].TryGetValue(account, out row))
+                {
+                    PushMsg(string.Format(accountNotFoundTmp, account, ddi_init), 1);
+                    return false;
+                }
+                data.ddiinitiate = this.ReflectSaveData<OpenAPIDirectDebitInstructionResponse>(row, new OpenAPIDirectDebitInstructionResponse());
+
+                if (!this.FromPareseExcelData[ddi_status].TryGetValue(account, out row))
+                {
+                    PushMsg(string.Format(accountNotFoundTmp, account, ddi_status), 1);
+                    return false;
+                }
+                data.ddistatus = this.ReflectSaveData<OpenAPIDirectDebitInstructionResponse>(row, new OpenAPIDirectDebitInstructionResponse());
+
+                if (!this.FromPareseExcelData[ddi_webhook].TryGetValue(account, out row))
+                {
+                    PushMsg(string.Format(accountNotFoundTmp, account, ddi_webhook), 1);
+                    return false;
+                }
+                data.webhookddi = this.ReflectSaveData<WebHookDDI>(row, new WebHookDDI());
+
+            }
+            catch (Exception ex)
+            {
+                LogUtil.Log.Error(ex.InnerException);
+                PushMsg(ex.Message, 1);
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool HandlePayment(string account, AccountCustomData data)
+        {
+            try
+            {
+                DataRow row = null;
+
+                if (!this.FromPareseExcelData[payment_init].TryGetValue(account, out row))
+                {
+                    PushMsg(string.Format(accountNotFoundTmp, account, payment_init), 1);
+                    return false;
+                }
+                data.paymentinitiate = this.ReflectSaveData<OpenApiPaymentIdResponse>(row, new OpenApiPaymentIdResponse());
+
+                if (!this.FromPareseExcelData[payment_status].TryGetValue(account, out row))
+                {
+                    PushMsg(string.Format(accountNotFoundTmp, account, payment_status), 1);
+                    return false;
+                }
+                data.paymentstatus = this.ReflectSaveData<OpenApiPaymentClientReferencesResponse>(row, new OpenApiPaymentClientReferencesResponse());
+
+                if (!this.FromPareseExcelData[payment_webhook].TryGetValue(account, out row))
+                {
+                    PushMsg(string.Format(accountNotFoundTmp, account, payment_webhook), 1);
+                    return false;
+                }
+                data.webhookpayment = this.ReflectSaveData<WebHookPayment>(row, new WebHookPayment());
+
+            }
+            catch (Exception ex)
+            {
+                LogUtil.Log.Error(ex.InnerException);
+                PushMsg(ex.Message, 1);
+                return false;
+            }
+
+            return true;
+        }
+
+        private DataSet ReadExcelToTable(string path)
+        {
+            DataSet set = new DataSet();
+            try
+            {
+                //HDR (yes/no) :whether indicate  first head  it is field column.
+                //string connstring = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" + path + ";Extended Properties='Excel 8.0;HDR=NO;IMEX=1';"; // Office 07 high
+                string connstring = "Provider=Microsoft.JET.OLEDB.4.0;Data Source=" + path + ";Extended Properties='Excel 8.0;HDR=YES;IMEX=1';"; //Office 07 lower
+                using (OleDbConnection conn = new OleDbConnection(connstring))
+                {
+                    conn.Open();
+
+                    OleDbDataAdapter adapter = new OleDbDataAdapter();
+                    adapter.SelectCommand = new OleDbCommand();
+                    adapter.SelectCommand.Connection = conn;
+
+                    DataTable sheetsName = conn.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, new object[] { null, null, null, "Table" });
+
+                    foreach (DataRow item in sheetsName.Rows)
+                    {
+                        string firstSheetName = item[2].ToString();
+                        int simpleJudge = firstSheetName.IndexOf("-");//4,8
+                        if (simpleJudge == 4 || simpleJudge == 8)
+                        {
+                            adapter.SelectCommand.CommandText = string.Format("SELECT * FROM [{0}] where accountId is not null", firstSheetName);
+                            adapter.Fill(set, firstSheetName);
+                        }
+                    }
+
+                    int lastCount = 0;
+                    bool hasConfirmInfo = false;
+                    foreach (DataTable table in set.Tables)
+                    {
+                        table.TableName = table.TableName.Trim('\'').TrimEnd('$');
+                        GlobalDefineParams.ImportDataHandle.TemplateSum += table.Rows.Count;
+
+                        if (!hasConfirmInfo && lastCount != table.Rows.Count)
+                        {
+                            hasConfirmInfo = !hasConfirmInfo;
+
+                            PushMsg("Warning: Find row count different in each sheets, maybe ignore some data.", 1);
+                        }
+                        lastCount = table.Rows.Count;
+                    }
+
+                    return set;
+                }
+            }
+            catch (Exception ex)
+            {
+                this.PushMsg(ex.ToString(), 2);
+                LogUtil.Log.Error(ex);
+            }
+            return set;
+        }
+
+
+
+
+    }
+}
