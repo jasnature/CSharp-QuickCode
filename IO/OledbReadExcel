@@ -47,6 +47,8 @@ namespace OledbReadExcel
 
         public Dictionary<string, Dictionary<string, DataRow>> FromPareseExcelData = new Dictionary<string, Dictionary<string, DataRow>>(10);
 
+        private static HashSet<string> CanNullField = new HashSet<string>(3);
+
         private ImportTemplateDataHandle(string bpath)
         {
             SavePath = Path.Combine(bpath, "ReplayTemplate", "GenDataTemp");
@@ -54,6 +56,8 @@ namespace OledbReadExcel
             {
                 Directory.CreateDirectory(SavePath);
             }
+            //set can null able field.
+            CanNullField.Add("comment");
         }
 
         public static ImportTemplateDataHandle Instance(string bpath)
@@ -131,6 +135,8 @@ namespace OledbReadExcel
                         useFilePath = files[0];
                         using (DataSet dataset = ReadExcelToTable(useFilePath))
                         {
+                            if (dataset.Tables == null || dataset.Tables.Count <= 0) return;
+
                             Interlocked.Add(ref GlobalDefineParams.ImportDataHandle.TemplateCompletedSum, CalcNumPercent(0.05f));
                             ParseExecelToMap(dataset);
                             Thread.Sleep(100);
@@ -183,11 +189,11 @@ namespace OledbReadExcel
                                 finally
                                 {
                                     Thread.Sleep(20);
-                                    Interlocked.Add(ref GlobalDefineParams.ImportDataHandle.TemplateCompletedSum, CalcNumPercent((float)7/this.TemplateSum));
+                                    Interlocked.Add(ref GlobalDefineParams.ImportDataHandle.TemplateCompletedSum, CalcNumPercent((float)7 / this.TemplateSum));
                                 }
                             }
 
-                            this.PushMsg(string.Format("<b style='color:blue'>Import Account to match mapping config completed!!!, result:data Sum={0},data success={1},data failed={2}</b>, <b style='color:green'>Merger account data: {3} </b>", this.TemplateSum, successCount, this.TemplateSum - successCount, successCount / 9));
+                            this.PushMsg(string.Format("<b style='color:blue'>Import Account to match mapping config completed!!!, result:Data Sum={0},Data Success={1},Data failed={2}</b>, <b style='color:green'>Merger Account Data: {3} </b>", this.TemplateSum, successCount, this.TemplateSum - successCount, successCount / 9));
                         }
 
                         if (useFilePath != null)
@@ -204,7 +210,7 @@ namespace OledbReadExcel
                 }
                 catch (Exception ex)
                 {
-                    this.PushMsg(ex.ToString(),2);
+                    this.PushMsg(ex.ToString(), 2);
                     LogUtil.Log.Error(ex);
                 }
                 finally
@@ -244,7 +250,7 @@ namespace OledbReadExcel
 
         }
 
-        string columnErrorTmp = "Warning: At row of account[{0}] and column name[{1}] data formate incorrect in [{2}] sheet,will be ignore and skip this row data.";
+        string columnErrorTmp = "Warning: At row of account<i>[{0}]</i> and column name <i>[{1}]</i> data formate incorrect or empty in <i>[{2}]</i> sheet,will be ignore and skip this account data.";
         private T ReflectSaveData<T>(DataRow row, T data)
             where T : class
         {
@@ -257,38 +263,43 @@ namespace OledbReadExcel
                     try
                     {
                         var va = row[pp.Name.ToLower()];
-                        if (va != DBNull.Value && pp.CanWrite)
+                        if (!(va is DBNull) && pp.CanWrite)
                         {
-                            object chengedObj = Convert.ChangeType(va, pp.PropertyType);
-                            pp.SetValue(data, chengedObj);
-                            //if (va is Double || va is int || va is Int32 || va is float)
-                            //{
-                            //    if (pp.PropertyType.Name.ToLower() == "string")
-                            //    {
-                            //        pp.SetValue(data, Convert.ToInt32(va).ToString());
-                            //    }
-                            //    else
-                            //    {
-                            //        pp.SetValue(data, Convert.ToInt32(va));
-                            //    }
-                            //}
-                            //else
-                            //{
-                            //    pp.SetValue(data, va);
-                            //}
-                        }
-                        else if (pp.CanWrite)
-                        {
+                            //object chengedObj = Convert.ChangeType(va, pp.PropertyType);
+                            //pp.SetValue(data, chengedObj);
                             switch (pp.PropertyType.Name.ToLower())
                             {
-                                case "string":
-                                    pp.SetValue(data, "");
-                                    break;
                                 case "int32":
                                 case "int":
                                 case "int64":
-                                    pp.SetValue(data, 0);
+                                    pp.SetValue(data, Convert.ToInt32(va));
                                     break;
+                                default:
+                                    pp.SetValue(data, va.ToString());
+                                    break;
+                            }
+
+                        }
+                        else if (pp.CanWrite)
+                        {
+                            if (CanNullField.Contains(pp.Name.ToLower()))
+                            {
+                                switch (pp.PropertyType.Name.ToLower())
+                                {
+                                    case "string":
+                                        pp.SetValue(data, "");
+                                        break;
+                                    case "int32":
+                                    case "int":
+                                    case "int64":
+                                        pp.SetValue(data, 0);
+                                        break;
+                                }
+                            }
+                            else
+                            {
+
+                                throw new Exception("find excel column empty in:" + string.Format(columnErrorTmp, row["accountId"], pp.Name, row.Table.TableName));
                             }
                         }
                     }
@@ -304,7 +315,7 @@ namespace OledbReadExcel
             return data;
         }
 
-        string accountNotFoundTmp = "Warning: Account-[{0}] not found in [{1}] sheet,will be ignore and skip this data.";
+        string accountNotFoundTmp = "Warning: Account-<i>[{0}]</i> not found in <i>[{1}]</i> sheet,will be ignore and skip this account data.";
         private bool HandleDDA(string account, AccountCustomData data)
         {
             try
@@ -440,6 +451,7 @@ namespace OledbReadExcel
 
                     DataTable sheetsName = conn.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, new object[] { null, null, null, "Table" });
 
+                    int needSheets = 0;
                     foreach (DataRow item in sheetsName.Rows)
                     {
                         string firstSheetName = item[2].ToString();
@@ -448,11 +460,20 @@ namespace OledbReadExcel
                         {
                             adapter.SelectCommand.CommandText = string.Format("SELECT * FROM [{0}] where accountId is not null", firstSheetName);
                             adapter.Fill(set, firstSheetName);
+                            needSheets++;
                         }
+                    }
+
+                    if (needSheets != 9)
+                    {
+                        PushMsg("Error: Find sheets count incorrent and should be 9 sheets or some sheet has been rename(please check).", 2);
+                        set.Tables.Clear();
+                        return set;
                     }
 
                     int lastCount = 0;
                     bool hasConfirmInfo = false;
+
                     foreach (DataTable table in set.Tables)
                     {
                         table.TableName = table.TableName.Trim('\'').TrimEnd('$');
