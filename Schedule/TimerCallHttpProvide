@@ -8,8 +8,10 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using BankApiCore.Util;
+using System.Security.Cryptography.X509Certificates;
+using System.Net.Security;
 
-namespace TimerCallHttpProvide
+namespace BankApiCore
 {
     public class WebHookItem
     {
@@ -37,6 +39,11 @@ namespace TimerCallHttpProvide
         /// currentRetry
         /// </summary>
         public int RetryCount { get; set; }
+
+        /// <summary>
+        /// for webhook report files
+        /// </summary>
+        public object InitiateRequestObject { get; set; }
     }
 
     /// <summary>
@@ -165,6 +172,8 @@ namespace TimerCallHttpProvide
                                     item_task.ProgressValue = 3;
                                     PrintMsg("Task.Factory.StartNew->>>>>>End-{3} Success URL={0},DATA={1},stat={2}", item_task.PushUrl, item_task.BodyData, item_task.ProgressValue, DoneSumCount);
                                     LogUtil.Log.Info("[WebHook Success] PushUrl={0},PreSendTime={1}", item_task.PushUrl, item_task.SendTime);
+                                    if( item_task.InitiateRequestObject != null )
+                                        ReportPortal.Webhook(item_task.InitiateRequestObject);
                                 }
                                 else
                                 {
@@ -178,7 +187,7 @@ namespace TimerCallHttpProvide
                                     item_task.ProgressValue = 2;
                                     item_task.CallLastError = ex;
                                 }
-                                //LogUtil.Log.Error(ex);
+                                LogUtil.Log.Error(ex);
                                 PrintMsg("Task.Factory.StartNew->>>>>>End Error URL={0},DATA={1},retry={2}", item_task.PushUrl, item_task.BodyData, item_task.RetryCount);
                             }
                             finally
@@ -187,7 +196,7 @@ namespace TimerCallHttpProvide
                                 PrintMsg("Task.Factory.StartNew->>>>>>End Release");
                             }
 
-                        }, item);
+                        }, item, TaskCreationOptions.LongRunning);
 
                     }
 
@@ -203,13 +212,18 @@ namespace TimerCallHttpProvide
                 catch (Exception ex)
                 {
                     PrintMsg(ex.ToString());
-                    //LogUtil.Log.Error(ex);
+                    LogUtil.Log.Error(ex);
                 }
                 finally
                 {
                     isTimerWorking = false;
                 }
             }
+        }
+
+        private static bool RemoteCertificateValidationCallback(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
+        {
+            return true;
         }
 
         private System.Net.HttpStatusCode PushHttpRequest(WebHookItem item)
@@ -225,10 +239,10 @@ namespace TimerCallHttpProvide
                 ServicePointManager.CheckCertificateRevocationList = false;
                 ServicePointManager.Expect100Continue = false;
             }
+            request.Proxy = null;
             request.Method = WebRequestMethods.Http.Post;
             //request.ContentType = "text/plain";
             request.ContentType = HttpContentType;
-
 
             byte[] datas = Encoding.UTF8.GetBytes(item.BodyData);
 
@@ -249,17 +263,17 @@ namespace TimerCallHttpProvide
             HttpContentType = contentType;
         }
 
-        public bool PushMsg(string url, string pushData, int? delayBySecond = null)
+        public bool PushMsg(string url, string pushData,object initiateRequestObject=null, int? delayBySecond = null)
         {
             TimeSpan? delayTime = null;
             if (delayBySecond != null)
             {
                 delayTime = TimeSpan.FromSeconds((double)delayBySecond);
             }
-            return PushMsg(url, pushData, delayTime);
+            return PushMsg(url, pushData,initiateRequestObject, delayTime);
         }
 
-        public bool PushMsg(string url, string pushData, TimeSpan? delayTime = null)
+        public bool PushMsg(string url, string pushData,object initiateRequestObject, TimeSpan? delayTime = null)
         {
             WebHookItem whi;
             try
@@ -267,7 +281,8 @@ namespace TimerCallHttpProvide
                 whi = new WebHookItem()
                    {
                        PushUrl = url,
-                       BodyData = pushData
+                       BodyData = pushData,
+                       InitiateRequestObject = initiateRequestObject
                    };
                 if (delayTime != null && delayTime.Value.TotalSeconds > 0)
                 {
