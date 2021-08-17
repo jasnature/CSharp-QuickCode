@@ -612,4 +612,66 @@ namespace WinForm
             base.SetVisibleCore(value);
         }
     }
+    
+    public class VListItem  //:System.Windows.Forms.Control
+    {
+        #region Event Region
+
+        public event EventHandler TextChanged;
+
+        #endregion
+
+        #region Field Region
+
+        private string _text;
+
+        #endregion
+
+        #region Property Region
+
+        public string Text
+        {
+            get { return _text; }
+            set
+            {
+                _text = value;
+
+                if (TextChanged != null)
+                    TextChanged(this, new EventArgs());
+            }
+        }
+
+        public string Desc
+        { 
+            get; set; 
+        }
+
+        public Rectangle Area { get; set; }
+
+        public Color TextColor { get; set; }
+
+        public FontStyle FontStyle { get; set; }
+
+        public Icon Icon { get; set; }
+
+        public object Tag { get; set; }
+
+        #endregion
+
+        #region Constructor Region
+
+        public VListItem()
+        {
+            TextColor = VColors.LightDefaultText;
+            FontStyle = FontStyle.Regular;
+        }
+
+        public VListItem(string text)
+            : this()
+        {
+            Text = text;
+        }
+
+        #endregion
+    }
 }
