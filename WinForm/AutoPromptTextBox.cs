@@ -7,6 +7,8 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
+namespace WinForm
+{
  public class AutoPromptTextBox : RichTextBox
     {
         protected VListView lbPromptListBox = new VListView() { Visible = false, Height = 220, Width = 300 };
@@ -543,3 +545,4 @@ using System.Windows.Forms;
             return this.Text.GetHashCode();
         }
     }
+}
